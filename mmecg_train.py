@@ -94,7 +94,11 @@ class MMECGTrainer:
         total_loss = 0
         num_batches = 0
         
-        for batch in train_loader:
+        # Add progress bar
+        from tqdm import tqdm
+        progress_bar = tqdm(train_loader, desc="Training", leave=False)
+        
+        for batch in progress_bar:
             radar = batch['radar'].to(self.device)      # [batch, 50, 1, 640]
             ecg = batch['ecg'].to(self.device)          # [batch, 640]
             positions = batch['positions'].to(self.device)  # [batch, 50, 3]
@@ -113,6 +117,13 @@ class MMECGTrainer:
             total_loss += loss.item()
             num_batches += 1
             
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'avg_loss': f'{total_loss/num_batches:.4f}'
+            })
+            
+        progress_bar.close()
         return total_loss / num_batches
     
     def validate(self, val_loader):
@@ -121,8 +132,12 @@ class MMECGTrainer:
         total_loss = 0
         num_batches = 0
         
+        # Add progress bar for validation
+        from tqdm import tqdm
+        progress_bar = tqdm(val_loader, desc="Validation", leave=False)
+        
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in progress_bar:
                 radar = batch['radar'].to(self.device)
                 ecg = batch['ecg'].to(self.device)
                 positions = batch['positions'].to(self.device)
@@ -133,6 +148,13 @@ class MMECGTrainer:
                 total_loss += loss.item()
                 num_batches += 1
                 
+                # Update progress bar
+                progress_bar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'avg_loss': f'{total_loss/num_batches:.4f}'
+                })
+                
+        progress_bar.close()
         return total_loss / num_batches
     
     def train(self, train_loader, val_loader, num_epochs=100):
@@ -140,7 +162,13 @@ class MMECGTrainer:
         print(f"Training on {self.device}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
-        for epoch in range(num_epochs):
+        # Add overall progress bar for epochs
+        from tqdm import tqdm
+        epoch_bar = tqdm(range(num_epochs), desc="Epochs", position=0)
+        
+        best_val_loss = float('inf')
+        
+        for epoch in epoch_bar:
             # Training
             train_loss = self.train_epoch(train_loader)
             self.train_losses.append(train_loss)
@@ -149,14 +177,27 @@ class MMECGTrainer:
             val_loss = self.validate(val_loader)
             self.val_losses.append(val_loss)
             
-            print(f"Epoch {epoch+1}/{num_epochs}: "
-                  f"Train Loss: {train_loss:.4f}, "
-                  f"Val Loss: {val_loss:.4f}")
+            # Update epoch progress bar
+            epoch_bar.set_postfix({
+                'train_loss': f'{train_loss:.4f}',
+                'val_loss': f'{val_loss:.4f}',
+                'best_val': f'{best_val_loss:.4f}'
+            })
+            
+            # Detailed epoch logging
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                print(f"\nEpoch {epoch+1}/{num_epochs}: "
+                      f"Train Loss: {train_loss:.4f}, "
+                      f"Val Loss: {val_loss:.4f}")
             
             # Save best model
-            if epoch == 0 or val_loss < min(self.val_losses[:-1]):
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
                 torch.save(self.model.state_dict(), 'best_mmecg_model.pth')
-                print(f"Saved best model at epoch {epoch+1}")
+                if (epoch + 1) % 5 == 0 or epoch == 0:
+                    print(f"  Saved best model at epoch {epoch+1} (val_loss: {val_loss:.4f})")
+        
+        epoch_bar.close()
     
     def plot_training_curves(self):
         """Plot training and validation curves"""
