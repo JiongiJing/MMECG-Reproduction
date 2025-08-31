@@ -3,54 +3,70 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
+import os
 import matplotlib.pyplot as plt
 from mmecg_model import MMECGTransformer, mu_law_encode, mu_law_decode
 
 class MMECGDataset(Dataset):
     """
-    Dataset class for MMECG training as described in the paper
+    Dataset class for loading processed MMECG data
     """
-    def __init__(self, radar_signals, ecg_signals, positions, seq_len=640):
+    def __init__(self, data_dir):
         """
         Args:
-            radar_signals: [N_samples, 50, 640] - 4D cardiac motion measurements  
-            ecg_signals: [N_samples, 640] - ground truth ECG signals
-            positions: [N_samples, 50, 3] - 3D spatial coordinates
+            data_dir: Directory containing processed .npz files
         """
-        self.radar_signals = torch.FloatTensor(radar_signals)
-        self.ecg_signals = torch.FloatTensor(ecg_signals)
-        self.positions = torch.FloatTensor(positions)
-        self.seq_len = seq_len
+        self.data_dir = data_dir
+        self.chunk_files = [f for f in os.listdir(data_dir) if f.startswith('data_chunk_') and f.endswith('.npz')]
+        self.chunk_files.sort()
         
-        # Apply μ-law encoding to ECG signals and quantize to 256 levels
-        self.ecg_encoded = self.quantize_ecg(self.ecg_signals)
+        # Count total samples
+        self.total_samples = 0
+        self.chunk_info = []
         
-    def quantize_ecg(self, ecg_signals):
-        """
-        Apply μ-law transformation and quantization as described in the paper
-        """
-        # Normalize ECG to [-1, 1] range
-        ecg_min, ecg_max = ecg_signals.min(), ecg_signals.max()
-        ecg_normalized = 2 * (ecg_signals - ecg_min) / (ecg_max - ecg_min) - 1
-        
-        # Apply μ-law encoding
-        ecg_mu_law = mu_law_encode(ecg_normalized, mu=255)
-        
-        # Quantize to 256 levels [0, 255]
-        ecg_quantized = ((ecg_mu_law + 1) * 127.5).long()
-        ecg_quantized = torch.clamp(ecg_quantized, 0, 255)
-        
-        return ecg_quantized
-        
+        for chunk_file in self.chunk_files:
+            data = np.load(os.path.join(data_dir, chunk_file))
+            num_samples = len(data['rcg'])
+            self.chunk_info.append({
+                'file': chunk_file,
+                'num_samples': num_samples,
+                'start_idx': self.total_samples
+            })
+            self.total_samples += num_samples
+    
     def __len__(self):
-        return len(self.radar_signals)
-        
+        return self.total_samples
+    
     def __getitem__(self, idx):
-        return {
-            'radar': self.radar_signals[idx].unsqueeze(1),  # Add channel dim: [50, 1, 640]
-            'ecg': self.ecg_encoded[idx],                   # [640] with values [0, 255]
-            'positions': self.positions[idx]                # [50, 3]
-        }
+        # Find which chunk contains this index
+        for chunk in self.chunk_info:
+            if idx < chunk['start_idx'] + chunk['num_samples']:
+                chunk_idx = idx - chunk['start_idx']
+                
+                # Load data from chunk
+                data = np.load(os.path.join(self.data_dir, chunk['file']))
+                
+                rcg = data['rcg'][chunk_idx]  # [50, 1, seq_len]
+                ecg = data['ecg'][chunk_idx]  # [seq_len]
+                positions = data['positions'][chunk_idx]  # [50, 3]
+                
+                # Apply μ-law encoding to ECG
+                ecg_normalized = 2 * (ecg - ecg.min()) / (ecg.max() - ecg.min()) - 1
+                ecg_mu_law = mu_law_encode(torch.FloatTensor(ecg_normalized), mu=255)
+                ecg_quantized = ((ecg_mu_law + 1) * 127.5).long()
+                ecg_quantized = torch.clamp(ecg_quantized, 0, 255)
+                
+                # Convert to torch tensors
+                rcg_tensor = torch.FloatTensor(rcg)
+                positions_tensor = torch.FloatTensor(positions)
+                
+                return {
+                    'radar': rcg_tensor,
+                    'ecg': ecg_quantized,
+                    'positions': positions_tensor
+                }
+        
+        raise IndexError(f"Index {idx} out of range")
 
 class MMECGTrainer:
     """
@@ -182,30 +198,37 @@ def create_synthetic_data(num_samples=1000, seq_len=640, num_signals=50):
     
     return radar_signals, ecg_signals, positions
 
+
 def main():
     """Main training script"""
     print("=== MMECG Model Training ===")
     
-    # Create synthetic data (replace with real data loading)
-    print("Loading synthetic data...")
-    radar_data, ecg_data, positions_data = create_synthetic_data(num_samples=1000)
+    # Load real processed data
+    data_dir = r"C:\Users\28474\Desktop\dataset\MMECG\split"
+    print(f"Loading real data from {data_dir}...")
     
-    # Split data
-    split_idx = int(0.8 * len(radar_data))
-    train_radar, val_radar = radar_data[:split_idx], radar_data[split_idx:]
-    train_ecg, val_ecg = ecg_data[:split_idx], ecg_data[split_idx:]
-    train_pos, val_pos = positions_data[:split_idx], positions_data[split_idx:]
+    # Create dataset from processed data
+    full_dataset = MMECGDataset(data_dir)
     
-    # Create datasets
-    train_dataset = MMECGDataset(train_radar, train_ecg, train_pos)
-    val_dataset = MMECGDataset(val_radar, val_ecg, val_pos)
+    # Split into train and validation (80/20) with fixed random seed for reproducibility
+    total_samples = len(full_dataset)
+    train_size = int(0.8 * total_samples)
+    val_size = total_samples - train_size
     
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+    # Set random seed for reproducible splitting
+    generator = torch.Generator().manual_seed(42)
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        full_dataset, [train_size, val_size], generator=generator
+    )
     
+    # Create data loaders with smaller batch size for memory constraints
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=2)
+    
+    print(f"Total samples: {total_samples}")
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
+    print(f"Batch size: 8 (adjusted for 8GB VRAM)")
     
     # Initialize model and trainer
     model = MMECGTransformer()
