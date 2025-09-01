@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+from scipy.stats import pearsonr
 from mmecg_model import MMECGTransformer, mu_law_encode, mu_law_decode
 
 class MMECGDataset(Dataset):
@@ -212,6 +213,84 @@ class MMECGTrainer:
         plt.savefig('training_curves.png')
         plt.show()
 
+    def visualize_reconstruction(self, val_loader, num_samples=5):
+        """
+        Visualize reconstruction results for sample validation data
+        Args:
+            val_loader: Validation data loader
+            num_samples: Number of samples to visualize
+        """
+        self.model.eval()
+        
+        # Get a batch of validation data
+        batch = next(iter(val_loader))
+        radar = batch['radar'].to(self.device)[:num_samples]
+        ecg_true = batch['ecg'].to(self.device)[:num_samples]
+        positions = batch['positions'].to(self.device)[:num_samples]
+        
+        with torch.no_grad():
+            # Get model predictions
+            logits = self.model(radar, positions)
+            
+            # Convert logits to predicted ECG values
+            pred_probs = torch.softmax(logits, dim=-1)
+            ecg_pred_indices = torch.argmax(pred_probs, dim=-1)
+            
+            # Convert quantized indices back to continuous values
+            # ecg_pred_quantized = (ecg_pred_indices.float() / 127.5) - 1
+            ecg_pred = mu_law_decode(ecg_pred_indices, mu=255)
+            
+            # Convert true quantized ECG back to continuous
+            ecg_true_continuous = mu_law_decode(ecg_true, mu=255)
+        
+        # Calculate metrics
+        import numpy as np
+        
+        correlations = []
+        rmses = []
+        
+        for i in range(num_samples):
+            true_sig = ecg_true_continuous[i].cpu().numpy()
+            pred_sig = ecg_pred[i].cpu().numpy()
+            
+            # Calculate Pearson correlation
+            corr, _ = pearsonr(true_sig, pred_sig)
+            correlations.append(corr)
+            
+            # Calculate RMSE
+            rmse = np.sqrt(np.mean((true_sig - pred_sig) ** 2))
+            rmses.append(rmse)
+        
+        # Create reconstruction visualization
+        fig, axes = plt.subplots(num_samples, 1, figsize=(12, 3 * num_samples))
+        if num_samples == 1:
+            axes = [axes]
+        
+        time = np.linspace(0, 3.2, 640)  # 3.2 seconds at 200Hz
+        
+        for i, ax in enumerate(axes):
+            true_sig = ecg_true_continuous[i].cpu().numpy()
+            pred_sig = ecg_pred[i].cpu().numpy()
+            
+            ax.plot(time, true_sig, 'b-', label='Ground Truth', alpha=0.7, linewidth=1.5)
+            ax.plot(time, pred_sig, 'r-', label='Reconstructed', alpha=0.7, linewidth=1.5)
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('ECG Amplitude')
+            ax.set_title(f'Sample {i+1}: Correlation={correlations[i]:.3f}, RMSE={rmses[i]:.3f}')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('reconstruction_results.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # Print summary statistics
+        print(f"\nReconstruction Quality Summary:")
+        print(f"Average Pearson Correlation: {np.mean(correlations):.4f} ± {np.std(correlations):.4f}")
+        print(f"Average RMSE: {np.mean(rmses):.4f} ± {np.std(rmses):.4f}")
+        print(f"Best Correlation: {np.max(correlations):.4f}")
+        print(f"Worst Correlation: {np.min(correlations):.4f}")
+
 def create_synthetic_data(num_samples=1000, seq_len=640, num_signals=50):
     """
     Create synthetic data for testing (replace with real data loading)
@@ -279,8 +358,12 @@ def main():
     print("\nStarting training...")
     trainer.train(train_loader, val_loader, num_epochs=50)
     
-    # Plot results
+    # Plot training curves
     trainer.plot_training_curves()
+    
+    # Visualize reconstruction results
+    print("\nVisualizing reconstruction results...")
+    trainer.visualize_reconstruction(val_loader, num_samples=5)
     
     print("Training completed!")
 
