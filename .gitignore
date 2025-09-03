@@ -1,3 +1,5 @@
+extern/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -76,3 +78,6 @@ data/
 # Temporary files
 tmp/
 temp/
+
+# claude
+.claude/
