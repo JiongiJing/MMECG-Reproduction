@@ -78,9 +78,13 @@ class MMECGTrainer:
         self.device = device
         
         # Training hyperparameters from paper
-        self.lr = 0.001
+        self.lr = 0.002
         self.batch_size = 64
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        
+        # Dynamic learning rate scheduling
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=50, eta_min=1e-5)
+        self.warmup_epochs = 5
         
         # Cross-entropy loss for categorical distribution (as mentioned in paper)
         self.criterion = nn.CrossEntropyLoss()
@@ -178,11 +182,22 @@ class MMECGTrainer:
             val_loss = self.validate(val_loader)
             self.val_losses.append(val_loss)
             
+            # Learning rate warmup and scheduling
+            if epoch < self.warmup_epochs:
+                # Linear warmup
+                lr_scale = min(1.0, float(epoch + 1) / self.warmup_epochs)
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = self.lr * lr_scale
+            else:
+                self.scheduler.step()
+            
             # Update epoch progress bar
+            current_lr = self.optimizer.param_groups[0]['lr']
             epoch_bar.set_postfix({
                 'train_loss': f'{train_loss:.4f}',
                 'val_loss': f'{val_loss:.4f}',
-                'best_val': f'{best_val_loss:.4f}'
+                'best_val': f'{best_val_loss:.4f}',
+                'lr': f'{current_lr:.2e}'
             })
             
             # Detailed epoch logging
@@ -342,13 +357,13 @@ def main():
     )
     
     # Create data loaders with smaller batch size for memory constraints
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=12)
+    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=12)
     
     print(f"Total samples: {total_samples}")
     print(f"Training samples: {len(train_dataset)}")
     print(f"Validation samples: {len(val_dataset)}")
-    print(f"Batch size: 8 (adjusted for 8GB VRAM)")
+    print(f"Batch size: 32")
     
     # Initialize model and trainer
     model = MMECGTransformer()
