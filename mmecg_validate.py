@@ -5,72 +5,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
-from sklearn.metrics import mean_squared_error
 from tqdm import tqdm
 import json
 
 from mmecg_model import MMECGTransformer, mu_law_encode, mu_law_decode
-
-class MMECGValidationDataset:
-    """
-    Dataset class for loading processed MMECG validation data
-    """
-    def __init__(self, data_dir):
-        """
-        Args:
-            data_dir: Directory containing processed .npz files
-        """
-        self.data_dir = data_dir
-        self.chunk_files = [f for f in os.listdir(data_dir) if f.startswith('data_chunk_') and f.endswith('.npz')]
-        self.chunk_files.sort()
-        
-        # Count total samples
-        self.total_samples = 0
-        self.chunk_info = []
-        
-        for chunk_file in self.chunk_files:
-            data = np.load(os.path.join(data_dir, chunk_file))
-            num_samples = len(data['rcg'])
-            self.chunk_info.append({
-                'file': chunk_file,
-                'num_samples': num_samples,
-                'start_idx': self.total_samples
-            })
-            self.total_samples += num_samples
-    
-    def __len__(self):
-        return self.total_samples
-    
-    def __getitem__(self, idx):
-        # Find which chunk contains this index
-        for chunk in self.chunk_info:
-            if idx < chunk['start_idx'] + chunk['num_samples']:
-                chunk_idx = idx - chunk['start_idx']
-                
-                # Load data from chunk
-                data = np.load(os.path.join(self.data_dir, chunk['file']))
-                
-                rcg = data['rcg'][chunk_idx]  # [50, 1, seq_len]
-                ecg = data['ecg'][chunk_idx]  # [seq_len]
-                positions = data['positions'][chunk_idx]  # [50, 3]
-                
-                # Apply μ-law encoding to ECG (same as training)
-                ecg_normalized = 2 * (ecg - ecg.min()) / (ecg.max() - ecg.min()) - 1
-                ecg_mu_law = mu_law_encode(torch.FloatTensor(ecg_normalized), mu=255)
-                ecg_quantized = ((ecg_mu_law + 1) * 127.5).long()
-                ecg_quantized = torch.clamp(ecg_quantized, 0, 255)
-                
-                # Convert to torch tensors
-                rcg_tensor = torch.FloatTensor(rcg)
-                positions_tensor = torch.FloatTensor(positions)
-                
-                return {
-                    'rcg': rcg_tensor,
-                    'ecg': ecg_quantized,
-                    'positions': positions_tensor
-                }
-        
-        raise IndexError(f"Index {idx} out of range")
+from mmecg_train import MMECGDataset
 
 def load_model(model_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
     """
@@ -98,6 +37,7 @@ def load_model(model_path, device='cuda' if torch.cuda.is_available() else 'cpu'
 def calculate_metrics(true_ecg, pred_ecg):
     """
     Calculate validation metrics between true and predicted ECG signals
+    Match the training code's approach for RMSE calculation
     """
     metrics = {}
     
@@ -105,8 +45,8 @@ def calculate_metrics(true_ecg, pred_ecg):
     corr, _ = pearsonr(true_ecg, pred_ecg)
     metrics['correlation'] = corr
     
-    # RMSE
-    rmse = np.sqrt(mean_squared_error(true_ecg, pred_ecg))
+    # RMSE calculation
+    rmse = np.sqrt(np.mean((true_ecg - pred_ecg) ** 2))
     metrics['rmse'] = rmse
     
     # MAE
@@ -134,15 +74,22 @@ def validate_model(model, val_loader, device, output_dir='validation_results'):
     
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validating"):
-            rcg = batch['rcg'].to(device)
+            rcg = batch['radar'].to(device)
             true_ecg = batch['ecg'].to(device)
             positions = batch['positions'].to(device)
             
-            # Get model predictions
-            pred_ecg = model.predict(rcg, positions)
+            logits = model(rcg, positions)
+            pred_probs = torch.softmax(logits, dim=-1)
+            ecg_pred_indices = torch.argmax(pred_probs, dim=-1)
+            
+            # Convert predicted indices back to continuous ECG signals
+            pred_ecg = mu_law_decode(ecg_pred_indices, mu=255)
+            
+            # Convert true quantized ECG back to continuous
+            true_ecg_continuous = mu_law_decode(true_ecg, mu=255)
             
             # Convert to numpy for metric calculation
-            true_ecg_np = true_ecg.cpu().numpy()
+            true_ecg_np = true_ecg_continuous.cpu().numpy()
             pred_ecg_np = pred_ecg.cpu().numpy()
             
             # Calculate metrics for each sample in batch
@@ -222,7 +169,7 @@ def save_results(metrics, true_ecg, pred_ecg, output_dir):
     
     return metrics_summary
 
-def validate_model_on_dataset():
+def main():
     """
     Main validation function with parameters defined internally
     """
@@ -248,8 +195,7 @@ def validate_model_on_dataset():
     if model is None:
         return
     
-    # Create full dataset and split using same logic as training
-    full_dataset = MMECGValidationDataset(data_dir)
+    full_dataset = MMECGDataset(data_dir)
     total_samples = len(full_dataset)
     val_size = int(val_split_ratio * total_samples)
     train_size = total_samples - val_size
@@ -291,4 +237,4 @@ def validate_model_on_dataset():
     return metrics_summary
 
 if __name__ == "__main__":
-    validate_model_on_dataset()
+    main()
