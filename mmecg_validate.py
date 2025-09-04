@@ -79,7 +79,7 @@ def load_model(model_path, device='cuda' if torch.cuda.is_available() else 'cpu'
     model = MMECGTransformer()
     
     if os.path.exists(model_path):
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
