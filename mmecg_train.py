@@ -217,6 +217,11 @@ class MMECGTrainer:
     
     def plot_training_curves(self):
         """Plot training and validation curves"""
+        # Set matplotlib backend to avoid display issues
+        import matplotlib
+        matplotlib.use('Agg')  # Use non-interactive backend to avoid display issues
+        import matplotlib.pyplot as plt
+        
         plt.figure(figsize=(10, 6))
         plt.plot(self.train_losses, label='Training Loss')
         plt.plot(self.val_losses, label='Validation Loss')
@@ -226,7 +231,7 @@ class MMECGTrainer:
         plt.legend()
         plt.grid(True)
         plt.savefig('training_curves.png')
-        plt.show()
+        plt.close()  # Close figure to free memory
 
     def visualize_reconstruction(self, val_loader, num_samples=5):
         """
@@ -235,6 +240,11 @@ class MMECGTrainer:
             val_loader: Validation data loader
             num_samples: Number of samples to visualize
         """
+        # Set matplotlib backend to avoid display issues
+        import matplotlib
+        matplotlib.use('Agg')  # Use non-interactive backend to avoid display issues
+        import matplotlib.pyplot as plt
+        
         self.model.eval()
         
         # Get a batch of validation data
@@ -297,7 +307,7 @@ class MMECGTrainer:
         
         plt.tight_layout()
         plt.savefig('reconstruction_results.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()  # Close figure to free memory
         
         # Print summary statistics
         print(f"\nReconstruction Quality Summary:")
