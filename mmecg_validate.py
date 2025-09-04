@@ -146,15 +146,16 @@ def save_results(metrics, true_ecg, pred_ecg, output_dir):
     """
     Save validation results to files
     """
-    # Save metrics
+    # Convert numpy values to native Python types for JSON serialization
     metrics_summary = {
-        'average_correlation': np.mean([m['correlation'] for m in metrics]),
-        'average_rmse': np.mean([m['rmse'] for m in metrics]),
-        'average_mae': np.mean([m['mae'] for m in metrics]),
-        'average_snr': np.mean([m['snr'] for m in metrics]),
-        'median_correlation': np.median([m['correlation'] for m in metrics]),
-        'median_rmse': np.median([m['rmse'] for m in metrics]),
-        'all_metrics': metrics
+        'average_correlation': float(np.mean([m['correlation'] for m in metrics])),
+        'average_rmse': float(np.mean([m['rmse'] for m in metrics])),
+        'average_mae': float(np.mean([m['mae'] for m in metrics])),
+        'average_snr': float(np.mean([m['snr'] for m in metrics])),
+        'median_correlation': float(np.median([m['correlation'] for m in metrics])),
+        'median_rmse': float(np.median([m['rmse'] for m in metrics])),
+        'all_metrics': [{k: float(v) if isinstance(v, (np.floating, np.integer)) else v 
+                       for k, v in m.items()} for m in metrics]
     }
     
     with open(os.path.join(output_dir, 'metrics_summary.json'), 'w') as f:
