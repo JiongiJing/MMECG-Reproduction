@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import numpy as np
+from custom_transformer_compat import create_custom_transformer
 
 def mu_law_encode(x, mu=255):
     """
@@ -91,15 +92,16 @@ class SpatialTransformerEncoder(nn.Module):
         # Linear projection for 3D position embedding (3 -> 32)
         self.position_proj = nn.Linear(3, d_model)
         
-        # Transformer encoder layers
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
+        # Transformer encoder layers with custom Q/K/V dimension
+        self.transformer = create_custom_transformer(
+            embed_dim=d_model,
+            num_heads=nhead,
+            qkv_dim=64,
+            ff_dim=dim_feedforward,
+            num_layers=num_layers,
             dropout=0.1,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
     def forward(self, temporal_features, positions):
         """
