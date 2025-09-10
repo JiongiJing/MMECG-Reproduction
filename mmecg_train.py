@@ -6,7 +6,21 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr
+import json
+import datetime
+import subprocess
+import sys
+import platform
 from mmecg_model import MMECGTransformer, mu_law_encode, mu_law_decode
+
+# Get current date for training folder
+current_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+begin_training_date = current_date
+
+# Create training info directory structure
+training_info_dir = "training_info"
+date_training_dir = os.path.join(training_info_dir, current_date)
+os.makedirs(date_training_dir, exist_ok=True)
 
 class MMECGDataset(Dataset):
     """
@@ -73,7 +87,7 @@ class MMECGTrainer:
     """
     Training class for MMECG model following paper specifications
     """
-    def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu', data_dir=None):
         self.model = model.to(device)
         self.device = device
         
@@ -92,6 +106,22 @@ class MMECGTrainer:
         # Training history
         self.train_losses = []
         self.val_losses = []
+        
+        # Training metadata
+        self.training_metadata = {
+            'batch_size': self.batch_size,
+            'learning_rate': self.lr,
+            'warmup_epochs': self.warmup_epochs,
+            'eta_min': 1e-5,
+            'optimizer': 'Adam',
+            'scheduler': 'CosineAnnealingLR',
+            'T_max': 50,
+            'criterion': 'CrossEntropyLoss',
+            'device': str(device),
+            'start_time': datetime.datetime.now().isoformat(),
+            'random_seed': 42,
+            'data_directory': data_dir
+        }
         
     def train_epoch(self, train_loader):
         """Train for one epoch"""
@@ -167,6 +197,12 @@ class MMECGTrainer:
         print(f"Training on {self.device}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
+        # Add dataset information to metadata
+        self.training_metadata['train_samples'] = len(train_loader.dataset)
+        self.training_metadata['val_samples'] = len(val_loader.dataset)
+        self.training_metadata['train_batches'] = len(train_loader)
+        self.training_metadata['val_batches'] = len(val_loader)
+        
         # Add overall progress bar for epochs
         from tqdm import tqdm
         epoch_bar = tqdm(range(num_epochs), desc="Epochs", position=0)
@@ -209,11 +245,98 @@ class MMECGTrainer:
             # Save best model
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                torch.save(self.model.state_dict(), 'best_mmecg_model.pth')
+                model_path = os.path.join(date_training_dir, f'best_mmecg_model_{begin_training_date}.pth')
+                torch.save(self.model.state_dict(), model_path)
                 if (epoch + 1) % 5 == 0 or epoch == 0:
                     print(f"  Saved best model at epoch {epoch+1} (val_loss: {val_loss:.4f})")
         
         epoch_bar.close()
+        
+        # Update training metadata with final results
+        self.training_metadata['end_time'] = datetime.datetime.now().isoformat()
+        self.training_metadata['total_epochs'] = num_epochs
+        self.training_metadata['final_train_loss'] = train_loss
+        self.training_metadata['final_val_loss'] = val_loss
+        self.training_metadata['best_val_loss'] = best_val_loss
+        self.training_metadata['train_loss_history'] = self.train_losses
+        self.training_metadata['val_loss_history'] = self.val_losses
+        
+        # Save training information
+        self._save_training_info()
+    
+    def _save_training_info(self):
+        """Save comprehensive training information to file"""
+        # Get git commit hash if available
+        try:
+            git_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd='.').decode('utf-8').strip()
+            self.training_metadata['git_commit'] = git_commit
+        except:
+            self.training_metadata['git_commit'] = 'unknown'
+        
+        # Get environment information
+        self.training_metadata['python_version'] = sys.version
+        self.training_metadata['platform'] = platform.platform()
+        self.training_metadata['torch_version'] = torch.__version__
+        self.training_metadata['numpy_version'] = np.__version__
+        
+        # Get model information
+        self.training_metadata['model_parameters'] = sum(p.numel() for p in self.model.parameters())
+        
+        # Save to JSON file
+        info_file = os.path.join(date_training_dir, f'training_info_{begin_training_date}.json')
+        with open(info_file, 'w') as f:
+            json.dump(self.training_metadata, f, indent=2, default=str)
+        
+        # Also save to TXT file for easy reading
+        txt_file = os.path.join(date_training_dir, f'training_info_{begin_training_date}.txt')
+        with open(txt_file, 'w') as f:
+            f.write("=== MMECG Training Information ===\n\n")
+            f.write(f"Training Date: {self.training_metadata['start_time']}\n")
+            f.write(f"Completed: {self.training_metadata['end_time']}\n")
+            f.write(f"Duration: {datetime.datetime.fromisoformat(self.training_metadata['end_time']) - datetime.datetime.fromisoformat(self.training_metadata['start_time'])})\n\n")
+            
+            f.write("=== Hyperparameters ===\n")
+            f.write(f"Batch Size: {self.training_metadata['batch_size']}\n")
+            f.write(f"Learning Rate: {self.training_metadata['learning_rate']}\n")
+            f.write(f"Warmup Epochs: {self.training_metadata['warmup_epochs']}\n")
+            f.write(f"Eta Min: {self.training_metadata['eta_min']}\n")
+            f.write(f"Optimizer: {self.training_metadata['optimizer']}\n")
+            f.write(f"Scheduler: {self.training_metadata['scheduler']}\n")
+            f.write(f"T_max: {self.training_metadata['T_max']}\n")
+            f.write(f"Criterion: {self.training_metadata['criterion']}\n")
+            f.write(f"Random Seed: {self.training_metadata['random_seed']}\n\n")
+            
+            f.write("=== Dataset Information ===\n")
+            f.write(f"Data Directory: {self.training_metadata['data_directory']}\n")
+            f.write(f"Training Samples: {self.training_metadata['train_samples']}\n")
+            f.write(f"Validation Samples: {self.training_metadata['val_samples']}\n")
+            f.write(f"Training Batches: {self.training_metadata['train_batches']}\n")
+            f.write(f"Validation Batches: {self.training_metadata['val_batches']}\n\n")
+            
+            f.write("=== Model Information ===\n")
+            f.write(f"Device: {self.training_metadata['device']}\n")
+            f.write(f"Model Parameters: {self.training_metadata['model_parameters']:,}\n\n")
+            
+            f.write("=== Training Results ===\n")
+            f.write(f"Total Epochs: {self.training_metadata['total_epochs']}\n")
+            f.write(f"Final Train Loss: {self.training_metadata['final_train_loss']:.6f}\n")
+            f.write(f"Final Val Loss: {self.training_metadata['final_val_loss']:.6f}\n")
+            f.write(f"Best Val Loss: {self.training_metadata['best_val_loss']:.6f}\n\n")
+            
+            f.write("=== Environment ===\n")
+            f.write(f"Python Version: {self.training_metadata['python_version']}\n")
+            f.write(f"Platform: {self.training_metadata['platform']}\n")
+            f.write(f"Torch Version: {self.training_metadata['torch_version']}\n")
+            f.write(f"NumPy Version: {self.training_metadata['numpy_version']}\n")
+            f.write(f"Git Commit: {self.training_metadata['git_commit']}\n\n")
+            
+            f.write("=== Files Saved ===\n")
+            f.write(f"Model: best_mmecg_model_{begin_training_date}.pth\n")
+            f.write(f"Training Curves: training_curves_{begin_training_date}.png\n")
+            f.write(f"Reconstruction: reconstruction_results_{begin_training_date}.png\n")
+            f.write(f"Training Info: training_info_{begin_training_date}.json\n")
+        
+        print(f"\nTraining information saved to: {txt_file}")
     
     def plot_training_curves(self):
         """Plot training and validation curves"""
@@ -230,7 +353,7 @@ class MMECGTrainer:
         plt.title('MMECG Training Curves')
         plt.legend()
         plt.grid(True)
-        plt.savefig('training_curves.png')
+        plt.savefig(os.path.join(date_training_dir, f'training_curves_{begin_training_date}.png'))
         plt.close()  # Close figure to free memory
 
     def visualize_reconstruction(self, val_loader, num_samples=5):
@@ -306,7 +429,7 @@ class MMECGTrainer:
             ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig('reconstruction_results.png', dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(date_training_dir, f'reconstruction_results_{begin_training_date}.png'), dpi=300, bbox_inches='tight')
         plt.close()  # Close figure to free memory
         
         # Print summary statistics
@@ -377,7 +500,7 @@ def main():
     
     # Initialize model and trainer
     model = MMECGTransformer()
-    trainer = MMECGTrainer(model)
+    trainer = MMECGTrainer(model, data_dir=data_dir)
     
     # Start training
     print("\nStarting training...")
