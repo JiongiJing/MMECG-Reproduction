@@ -93,7 +93,6 @@ class MMECGTrainer:
         
         # Training hyperparameters from paper
         self.lr = 0.002
-        self.batch_size = 64
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
         
         # Dynamic learning rate scheduling
@@ -109,7 +108,6 @@ class MMECGTrainer:
         
         # Training metadata
         self.training_metadata = {
-            'batch_size': self.batch_size,
             'learning_rate': self.lr,
             'warmup_epochs': self.warmup_epochs,
             'eta_min': 1e-5,
@@ -198,6 +196,8 @@ class MMECGTrainer:
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
         # Add dataset information to metadata
+        self.batch_size = train_loader.batch_size
+        self.training_metadata['batch_size'] = self.batch_size
         self.training_metadata['train_samples'] = len(train_loader.dataset)
         self.training_metadata['val_samples'] = len(val_loader.dataset)
         self.training_metadata['train_batches'] = len(train_loader)
