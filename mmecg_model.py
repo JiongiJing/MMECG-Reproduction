@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from net.TCN import TemporalConvNet
 import numpy as np
-from custom_transformer_compat import create_custom_transformer
+from net.custom_transformer_compat import create_custom_transformer
 
 def mu_law_encode(x, mu=255):
     """
@@ -183,49 +184,39 @@ class FeatureExpansion(nn.Module):
 class TCNDecoder(nn.Module):
     """
     Temporal Convolutional Network Decoder
-    9 stacks of TCN with dilation factor of 2, providing receptive field of 512
+    Uses TCN from net/TCN.py with num_channels=[8]*9, providing receptive field of 512
+    Training: parallel processing with step size 128
+    Inference: autoregressive single-step generation
     """
     def __init__(self, input_channels=4, output_classes=256, num_blocks=9, kernel_size=3):
         super(TCNDecoder, self).__init__()
         
-        # Dilated causal convolution blocks
-        self.tcn_blocks = nn.ModuleList()
+        self.num_blocks = num_blocks
+        self.kernel_size = kernel_size
+        self.receptive_field = 512
+        self.step_size = 128  # Training step size
         
-        for i in range(num_blocks):
-            dilation = 2 ** i  # Exponentially increasing dilation
-            padding = (kernel_size - 1) * dilation  # Causal padding
-            
-            block = nn.Sequential(
-                nn.Conv1d(input_channels, input_channels, kernel_size=kernel_size, 
-                         dilation=dilation, padding=padding),
-                nn.ReLU(),
-                nn.BatchNorm1d(input_channels),
-                nn.Dropout(0.1)
-            )
-            self.tcn_blocks.append(block)
-            
+        # Use TCN from net/TCN.py with num_channels=[8]*9
+        num_channels = [8] * num_blocks
+        self.tcn = TemporalConvNet(num_inputs=input_channels, num_channels=num_channels, 
+                                  kernel_size=kernel_size, dropout=0.1)
+        
         # Final output layer
-        self.output_conv = nn.Conv1d(input_channels, output_classes, kernel_size=1)
+        self.output_conv = nn.Conv1d(8, output_classes, kernel_size=1)
         
     def forward(self, x):
         """
         Args:
-            x: [batch_size, 4, 640] - fused cardiac features
+            x: [batch_size, 4, seq_len] - fused cardiac features
         Returns:
-            [batch_size, 640, 256] - ECG prediction logits
+            [batch_size, seq_len, 256] - ECG prediction logits
         """
-        # Apply TCN blocks with residual connections
-        for tcn_block in self.tcn_blocks:
-            residual = x
-            x = tcn_block(x)
-            # Remove extra padding for causality
-            if x.size(-1) > residual.size(-1):
-                x = x[:, :, :residual.size(-1)]
-            x = x + residual  # Residual connection
-            
+        # Apply TCN
+        x = self.tcn(x)  # [batch, 8, seq_len]
+        
         # Final output
-        x = self.output_conv(x)  # [batch, 256, 640]
-        x = x.transpose(1, 2)    # [batch, 640, 256]
+        x = self.output_conv(x)  # [batch, 256, seq_len]
+        x = x.transpose(1, 2)    # [batch, seq_len, 256]
         
         return x
 
